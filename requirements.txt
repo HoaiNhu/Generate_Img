@@ -1,5 +1,5 @@
 --index-url https://download.pytorch.org/whl/cpu
-flask>=2.3.2,<3.0  # Thay thế flask==2.3.2
+flask==2.2.5
 torch==2.3.0+cpu
 diffusers==0.29.2
 transformers==4.31.0
