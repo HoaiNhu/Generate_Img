@@ -21,36 +21,32 @@ def load_models():
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
             with torch.no_grad():
-                # Sử dụng model nhẹ hơn
+                # Load model với cấu hình cơ bản
                 controlnet = ControlNetModel.from_pretrained(
                     "lllyasviel/sd-controlnet-canny",
-                    torch_dtype=torch.float16,
-                    use_safetensors=True,
-                    variant="fp16"
+                    torch_dtype=torch.float16
                 )
                 
-                # Sử dụng model base thay vì 2.1
+                # Load model base với cấu hình cơ bản
                 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-                    "runwayml/stable-diffusion-v1-5",  # Model nhẹ hơn
+                    "runwayml/stable-diffusion-v1-5",
                     controlnet=controlnet,
                     torch_dtype=torch.float16,
-                    use_safetensors=True,
-                    variant="fp16",
                     safety_checker=None
                 )
                 
                 # Tối ưu hóa pipeline
                 pipe = pipe.to("cpu")
                 pipe.enable_attention_slicing(slice_size="auto")
-                pipe.enable_model_cpu_offload()  # Offload model ra CPU khi không cần
-                pipe.enable_vae_slicing()  # Tối ưu VAE
+                pipe.enable_model_cpu_offload()
+                pipe.enable_vae_slicing()
                 
                 print("Models loaded successfully")
         except Exception as e:
             print(f"Error loading models: {str(e)}")
             raise e
 
-def resize_with_padding(image, target_size=(192, 192)):  # Giảm xuống 192x192
+def resize_with_padding(image, target_size=(128, 128)):  # Giảm xuống 128x128
     """Resize ảnh giữ nguyên tỷ lệ và thêm padding"""
     ratio = min(target_size[0] / image.width, target_size[1] / image.height)
     new_size = (int(image.width * ratio), int(image.height * ratio))
@@ -72,8 +68,8 @@ def process_sketch(sketch_base64):
         sketch_data = base64.b64decode(sketch_base64.split(",")[1])
         sketch_image = Image.open(io.BytesIO(sketch_data)).convert("L")
         
-        # Resize ảnh xuống 192x192 với padding
-        sketch_image = resize_with_padding(sketch_image, (192, 192))
+        # Resize ảnh xuống 128x128 với padding
+        sketch_image = resize_with_padding(sketch_image, (128, 128))
         sketch_np = np.array(sketch_image)
 
         # Tiền xử lý với Canny
@@ -92,8 +88,8 @@ def process_sketch(sketch_base64):
             image = pipe(
                 prompt,
                 image=canny_image,
-                num_inference_steps=4,  # Giảm xuống 4 steps
-                guidance_scale=6.0,     # Giảm guidance scale
+                num_inference_steps=2,  # Giảm xuống 2 steps
+                guidance_scale=5.0,     # Giảm guidance scale
                 negative_prompt=negative_prompt,
             ).images[0]
 
@@ -103,7 +99,7 @@ def process_sketch(sketch_base64):
 
         # Chuyển kết quả thành base64 với chất lượng thấp hơn
         buffered = io.BytesIO()
-        image.save(buffered, format="JPEG", quality=75)  # Giảm chất lượng xuống 75%
+        image.save(buffered, format="JPEG", quality=70)  # Giảm chất lượng xuống 70%
         result_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return result_base64
     except Exception as e:
