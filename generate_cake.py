@@ -1,11 +1,12 @@
 import torch
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, DPMSolverMultistepScheduler
 from PIL import Image
 import cv2
 import numpy as np
 import base64
 import io
 import gc
+import os
 
 # Cache model globally
 controlnet = None
@@ -20,33 +21,43 @@ def load_models():
             gc.collect()
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
+            # Giảm số lượng workers của torch
+            torch.set_num_threads(1)
+            os.environ["OMP_NUM_THREADS"] = "1"
+
             with torch.no_grad():
-                # Load model với cấu hình cơ bản
+                # Sử dụng model nhẹ nhất có thể
                 controlnet = ControlNetModel.from_pretrained(
                     "lllyasviel/sd-controlnet-canny",
-                    torch_dtype=torch.float16
+                    torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
+                    use_safetensors=False  # Không sử dụng safetensors để giảm bộ nhớ
                 )
                 
-                # Load model base với cấu hình cơ bản
+                # Sử dụng model base nhẹ nhất
                 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-                    "runwayml/stable-diffusion-v1-5",
+                    "CompVis/stable-diffusion-v1-4",  # Model nhẹ hơn v1-5
                     controlnet=controlnet,
                     torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
+                    use_safetensors=False,
                     safety_checker=None
                 )
                 
                 # Tối ưu hóa pipeline
                 pipe = pipe.to("cpu")
-                pipe.enable_attention_slicing(slice_size="auto")
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)  # Scheduler nhanh hơn
+                pipe.enable_attention_slicing(slice_size=1)  # Slice size nhỏ nhất
                 pipe.enable_model_cpu_offload()
                 pipe.enable_vae_slicing()
+                pipe.enable_vae_tiling()  # Thêm tiling để giảm bộ nhớ
                 
                 print("Models loaded successfully")
         except Exception as e:
             print(f"Error loading models: {str(e)}")
             raise e
 
-def resize_with_padding(image, target_size=(128, 128)):  # Giảm xuống 128x128
+def resize_with_padding(image, target_size=(64, 64)):  # Giảm xuống 64x64
     """Resize ảnh giữ nguyên tỷ lệ và thêm padding"""
     ratio = min(target_size[0] / image.width, target_size[1] / image.height)
     new_size = (int(image.width * ratio), int(image.height * ratio))
@@ -68,28 +79,29 @@ def process_sketch(sketch_base64):
         sketch_data = base64.b64decode(sketch_base64.split(",")[1])
         sketch_image = Image.open(io.BytesIO(sketch_data)).convert("L")
         
-        # Resize ảnh xuống 128x128 với padding
-        sketch_image = resize_with_padding(sketch_image, (128, 128))
+        # Resize ảnh xuống 64x64 với padding
+        sketch_image = resize_with_padding(sketch_image, (64, 64))
         sketch_np = np.array(sketch_image)
 
         # Tiền xử lý với Canny
         sketch_canny = cv2.Canny(sketch_np, 100, 200)
         canny_image = Image.fromarray(sketch_canny)
 
-        # Tạo hình ảnh với ít steps hơn
-        prompt = "realistic cake, detailed, colorful, high quality"
-        negative_prompt = "blurry, low quality, text, watermark"
+        # Tạo hình ảnh với ít steps nhất có thể
+        prompt = "cake, colorful"  # Rút gọn prompt
+        negative_prompt = "blurry, text"  # Rút gọn negative prompt
         
         with torch.no_grad():
             # Giải phóng bộ nhớ trước khi generate
             gc.collect()
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
+            # Generate với ít steps nhất
             image = pipe(
                 prompt,
                 image=canny_image,
-                num_inference_steps=2,  # Giảm xuống 2 steps
-                guidance_scale=5.0,     # Giảm guidance scale
+                num_inference_steps=1,  # Giảm xuống 1 step
+                guidance_scale=3.0,     # Giảm guidance scale
                 negative_prompt=negative_prompt,
             ).images[0]
 
@@ -97,9 +109,9 @@ def process_sketch(sketch_base64):
             gc.collect()
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-        # Chuyển kết quả thành base64 với chất lượng thấp hơn
+        # Chuyển kết quả thành base64 với chất lượng thấp nhất
         buffered = io.BytesIO()
-        image.save(buffered, format="JPEG", quality=70)  # Giảm chất lượng xuống 70%
+        image.save(buffered, format="JPEG", quality=50)  # Giảm chất lượng xuống 50%
         result_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return result_base64
     except Exception as e:
